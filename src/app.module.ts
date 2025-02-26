@@ -8,7 +8,9 @@ import { MessageModule } from './modules/whatsapp/whatsapp.module';
 @Module({
   imports: [
     // Load .env variables
-    MongooseModule.forRoot('Enter your DB string here'),
+    MongooseModule.forRoot(
+      'mongodb+srv://kaifsaleem:m9TcOfekCVI7U55O@cluster0.ynfcx.mongodb.net/whatsapp',
+    ),
     MessageModule,
   ],
   controllers: [AppController],
