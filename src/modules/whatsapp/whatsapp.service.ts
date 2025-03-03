@@ -1,9 +1,13 @@
+/* eslint-disable @typescript-eslint/no-misused-promises */
+
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { EventEmitter } from 'events';
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Message, MessageDocument } from './message.schema';
+import { EventsService } from '../events/events.service';
 
 @Injectable()
 export class WhatsAppService {
@@ -11,8 +15,11 @@ export class WhatsAppService {
   private qrCodes = new Map<string, string>(); // Store QR codes
   private logger = new Logger(WhatsAppService.name);
 
+  private messageEventEmitters = new Map<string, EventEmitter>();
+
   constructor(
     @InjectModel(Message.name) private messageModel: Model<MessageDocument>,
+    private eventService: EventsService,
   ) {}
 
   /**
@@ -47,6 +54,30 @@ export class WhatsAppService {
     client.on('ready', () => {
       this.logger.log(`WhatsApp Client Ready for User: ${userId}`);
       this.qrCodes.delete(userId); // Remove QR after successful login
+    });
+
+    // Add message event listener
+    client.on('message', async (message) => {
+      const formattedMessage = {
+        id: message.id.id,
+        from: message.from,
+        to: message.to,
+        text: message.body,
+        timestamp: message.timestamp,
+        time: this.formatTimestamp(message.timestamp),
+        timeAgo: this.formatTimeAgo(message.timestamp),
+        fromMe: message.fromMe,
+      };
+
+      this.eventService.emit(`whatsapp.message.${userId}`, formattedMessage);
+
+      // Store message in database
+      await this.storeMessage(message.from, message.to, message.body, userId);
+
+      // // Emit event if there's an active listener for this user
+      // if (this.messageEventEmitters.has(userId)) {
+      //   this.messageEventEmitters.get(userId).emit('message', formattedMessage);
+      // }
     });
 
     await client.initialize();
@@ -94,10 +125,10 @@ export class WhatsAppService {
   /**
    * Send a WhatsApp Message
    */
-  async sendMessage(userId: string, to: string, message: string) {
-    const client = this.getClient(userId);
+  async sendMessage(from: string, to: string, message: string) {
+    const client = this.getClient(from);
     await client.sendMessage(to, message);
-    return this.storeMessage(client.info.wid._serialized, to, message, userId);
+    return this.storeMessage(client.info.wid._serialized, to, message, from);
   }
 
   /**
@@ -150,13 +181,122 @@ export class WhatsAppService {
    */
   async getChats(userId: string) {
     const client = this.getClient(userId);
+    if (!client) {
+      throw new NotFoundException('No active session for this user.');
+    }
     const chats = await client.getChats();
-    const users = chats.map(({ id, name, lastMessage }) => ({
-      id: id._serialized,
-      name,
-      lastMessage: lastMessage?.body || null,
-    }));
-    return users;
+    // i want to map all data inside user array which return on response of getChats
+
+    // const users = chats.map((chat) => ({
+    //   id: chat.id._serialized,
+    //   name: chat.name,
+    //   isGroup: chat.isGroup,
+    //   timestamp: chat.timestamp,
+    //   unreadCount: chat.unreadCount,
+    //   pinned: chat.pinned,
+    //   isMuted: chat.isMuted,
+    //   muteExpiration: chat.muteExpiration,
+    //   online_status: chat.
+    //   lastMessage: chat.lastMessage ? chat.lastMessage.body : null,
+
+    //   // lastMessage: lastMessage?.body || null,
+    // }));
+    const users = await Promise.all(
+      chats.map(async (chat) => {
+        // Get basic info from WhatsApp
+        const basicInfo = {
+          id: chat.id._serialized,
+          name: chat.name,
+          unReadChatCount: chat.unreadCount,
+          lastMessage: chat.lastMessage ? chat.lastMessage.body : null,
+          // The timestamp could be formatted as "2h ago" using a utility function
+          time: chat.lastMessage
+            ? this.formatTimeAgo(chat.lastMessage.timestamp)
+            : null,
+        };
+
+        // Fetch or mock additional user data
+        // In a real app, you would fetch this from your database using the chat ID or user number
+        const extendedInfo = await this.getUserExtendedInfo(
+          chat.id._serialized,
+          userId,
+        );
+
+        return {
+          ...basicInfo,
+          ...extendedInfo,
+          online_status: this.getOnlineStatus(chat.id._serialized, userId), // You'll need to implement this method
+        };
+      }),
+    );
+    return { users };
+  }
+
+  private formatTimeAgo(timestamp: number): string {
+    const now = Date.now();
+    const diff = now - timestamp * 1000; // WhatsApp timestamps are in seconds
+
+    // For messages less than an hour old, show minutes
+    const minutes = Math.floor(diff / (1000 * 60));
+    if (minutes < 60) return `${minutes}m ago`;
+
+    // For messages less than a day old, show hours
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    if (hours < 24) return `${hours}h ago`;
+
+    // For older messages, show days
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  }
+  private async getUserExtendedInfo(chatId: string, userId: string) {
+    // In a real app, fetch this from your database
+    // This is just mock data for demonstration
+
+    const client = this.getClient(userId);
+    const pic = await client.getProfilePicUrl(chatId);
+    return {
+      company: 'ABC Pvt Ltd',
+      role: 'Sr. Customer Manager',
+      work_email: 'user_work@company.com',
+      personal_email: 'user@company.com',
+      work_phone: '123-456-7890',
+      personal_phone: chatId.split('@')[0],
+      location: 'Port Narcos',
+      avatar: pic,
+      status: 'Technical Department',
+      birthdayText: 'Happy Birthday!',
+    };
+  }
+
+  private getOnlineStatus(chatId: string, userId: string) {
+    // const client = await this.getClient(userId);
+
+    // try {
+    //   // Subscribe to presence updates for this contact
+    //   // Note: This needs to be called only once per contact
+    //   if (!this.presenceSubscriptions.has(chatId)) {
+    //     await client.subscribePresenceUpdates(chatId);
+    //     this.presenceSubscriptions.add(chatId);
+    //   }
+
+    //   // Check if we have a cached presence state
+    //   const presenceState = this.presenceStates.get(chatId);
+
+    //   if (presenceState) {
+    //     return presenceState.available ? 'available' : 'unavailable';
+    //   }
+
+    //   return 'unknown';
+    // } catch (error) {
+    //   this.logger.error(`Error getting presence for ${chatId}`, error);
+    //   return 'unknown';
+    // }
+    // check online status of chat id
+
+    // You'll need to implement logic to determine online status
+    // This could be from presence updates or other source
+    // For now returning default value
+    return 'available';
   }
 
   /**
@@ -167,11 +307,24 @@ export class WhatsAppService {
     const chat = await client.getChatById(chatId);
     const messages = await chat.fetchMessages({ limit: 10 });
 
-    return messages.map(({ from, body, timestamp }) => ({
+    return messages.map(({ id, from, to, body, timestamp }) => ({
+      id: id.id,
       from,
-      body,
-      timestamp,
+      to,
+      text: body,
+      time: this.formatTimestamp(timestamp),
     }));
+  }
+
+  /**
+   * Convert Unix timestamp to formatted date
+   */
+  private formatTimestamp(timestamp: number): string {
+    // WhatsApp timestamps are in seconds, JavaScript Date expects milliseconds
+    const date = new Date(timestamp * 1000);
+
+    // Format as a readable date string (e.g., "Feb 28, 2025, 3:45 PM")
+    return date.toLocaleString();
   }
 
   /**

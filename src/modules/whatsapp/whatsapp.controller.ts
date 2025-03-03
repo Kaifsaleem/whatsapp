@@ -1,14 +1,72 @@
-import { Controller, Post, Body, Get, Param, Delete } from '@nestjs/common';
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+import {
+  Controller,
+  Post,
+  Body,
+  Get,
+  Param,
+  Delete,
+  Sse,
+} from '@nestjs/common';
 import { WhatsAppService } from './whatsapp.service';
 import { InitializeSessionDto } from './dto/initialize-session.dto';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { SendMessageDto } from './dto/create-message.dto';
+import { Observable } from 'rxjs';
+import { EventsService } from '../events/events.service';
 
 @ApiTags('WhatsApp')
 @Controller('whatsapp')
 export class WhatsAppController {
-  constructor(private readonly whatsappService: WhatsAppService) {}
+  constructor(
+    private readonly whatsappService: WhatsAppService,
+    private readonly eventService: EventsService,
+  ) {}
 
+  @Sse('messages/stream/:userId')
+  streamMessages(@Param('userId') userId: string): Observable<MessageEvent> {
+    return new Observable((subscriber) => {
+      // Send an initial connection message
+      subscriber.next(
+        new MessageEvent('message', {
+          data: JSON.stringify({
+            type: 'connection',
+            message: 'Connected to WhatsApp message stream',
+          }),
+        }),
+      );
+
+      // Set up heartbeat to keep connection alive
+      const heartbeat = setInterval(() => {
+        subscriber.next(
+          new MessageEvent('message', {
+            data: JSON.stringify({
+              type: 'heartbeat',
+              timestamp: new Date().toISOString(),
+            }),
+          }),
+        );
+      }, 3000); // Send heartbeat every 30 seconds
+
+      // Subscribe to real messages
+      const unsubscribe = this.eventService.subscribe(
+        `whatsapp.message.${userId}`,
+        (message) => {
+          subscriber.next(
+            new MessageEvent('message', {
+              data: JSON.stringify({ type: 'message', data: message }),
+            }),
+          );
+        },
+      );
+
+      // Clean up
+      return () => {
+        clearInterval(heartbeat);
+        unsubscribe();
+      };
+    });
+  }
   @Post('initialize')
   @ApiResponse({ status: 200, description: 'Session initialized successfully' })
   initializeSession(@Body() initializeSessionDto: InitializeSessionDto) {
@@ -31,9 +89,9 @@ export class WhatsAppController {
   @Post('send')
   sendMessage(@Body() sendMessageDto: SendMessageDto) {
     return this.whatsappService.sendMessage(
-      sendMessageDto.userId,
+      sendMessageDto.from,
       sendMessageDto.to,
-      sendMessageDto.message,
+      sendMessageDto.text,
     );
   }
 

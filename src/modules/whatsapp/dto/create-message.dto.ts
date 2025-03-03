@@ -5,7 +5,7 @@ export class SendMessageDto {
   @ApiProperty()
   @IsString()
   @IsNotEmpty()
-  userId: string;
+  from: string;
 
   @ApiProperty()
   @IsString()
@@ -15,5 +15,5 @@ export class SendMessageDto {
   @ApiProperty()
   @IsString()
   @IsNotEmpty()
-  message: string;
+  text: string;
 }

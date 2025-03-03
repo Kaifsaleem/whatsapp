@@ -6,7 +6,11 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   // enable cors
   // app.enable
-  app.enableCors();
+  app.enableCors({
+    origin: ['http://localhost:8081', 'https://your-frontend-domain.com'],
+    methods: ['GET', 'POST'],
+    credentials: true,
+  });
 
   const config = new DocumentBuilder()
     .setTitle('WhatsApp API')
